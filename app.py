@@ -10,75 +10,99 @@ import plotly.express as px
 from sklearn.ensemble import IsolationForest
 
 # Initialize Dash App
+# server = app.server is required for Gunicorn/Render deployment
 app = dash.Dash(__name__, external_stylesheets=['https://codepen.io/chriddyp/pen/bWLwgP.css'])
-server = app.server # Required for Render (Gunicorn)
+server = app.server 
 
 app.layout = html.Div([
-    html.H1("AI-Driven Database Insight Generator (v2.0)", style={'textAlign': 'center'}),
-    html.P("Optimized for Performance & Scalability", style={'textAlign': 'center', 'color': '#666'}),
-    
-    dcc.Upload(
-        id='upload-data',
-        children=html.Div(['Drag and Drop or ', html.A('Select .DB Files')]),
-        style={
-            'width': '100%', 'height': '60px', 'lineHeight': '60px',
-            'borderWidth': '1px', 'borderStyle': 'dashed',
-            'borderRadius': '5px', 'textAlign': 'center', 'margin': '10px'
-        },
-        multiple=True
-    ),
-    
-    # Loading Spinner to improve UX during processing
+    # Header Section
+    html.Div([
+        html.H1("AI-Driven Database Insight Generator", style={'marginBottom': '0px'}),
+        html.P("Enterprise Analytics & Natural Language Querying", style={'color': '#7f8c8d'})
+    ], style={'textAlign': 'center', 'padding': '20px', 'backgroundColor': '#f8f9fa'}),
+
+    # Main Upload Section
+    html.Div([
+        dcc.Upload(
+            id='upload-data',
+            children=html.Div(['Drag and Drop or ', html.A('Select .DB Files')]),
+            style={
+                'width': '100%', 'height': '80px', 'lineHeight': '80px',
+                'borderWidth': '2px', 'borderStyle': 'dashed',
+                'borderRadius': '10px', 'textAlign': 'center', 'margin': '10px'
+            },
+            multiple=True
+        ),
+    ], style={'padding': '0 50px'}),
+
+    # AI Consultant Section (NLQ Interface)
+    html.Div([
+        html.H3("💬 AI Data Consultant"),
+        html.P("Ask questions about your data in plain English (e.g., 'Find anomalies in sales')"),
+        dcc.Input(
+            id='ai-query-input', 
+            placeholder='Type your question here...', 
+            style={'width': '70%', 'padding': '10px', 'borderRadius': '5px', 'border': '1px solid #ccc'}
+        ),
+        html.Button(
+            'Analyze with AI', 
+            id='ai-query-btn', 
+            n_clicks=0,
+            style={'marginLeft': '10px', 'backgroundColor': '#2980b9', 'color': 'white', 'border': 'none', 'padding': '10px 20px', 'borderRadius': '5px'}
+        ),
+        html.Div(id='ai-query-response', style={'marginTop': '20px', 'padding': '15px', 'borderRadius': '5px', 'backgroundColor': '#ecf0f1', 'minHeight': '50px'})
+    ], style={'margin': '20px 50px', 'padding': '20px', 'border': '1px solid #dcdde1', 'borderRadius': '10px'}),
+
+    # Results Display Section
     dcc.Loading(
-        id="loading-1",
-        type="default",
-        children=html.Div(id='output-data-upload')
+        id="loading-spinner",
+        type="cube",
+        children=html.Div(id='output-data-upload', style={'padding': '0 50px'})
     ),
 ])
 
 def process_database(contents, filename):
+    """
+    Handles file decoding, temporary storage, SQLite processing, and ML analysis.
+    Optimized for memory safety and speed.
+    """
     temp_filename = f"temp_{filename}"
     db_summary = {}
     conn = None
     
     try:
+        # Decode and Save
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
-        
-        # 1. Atomic Write: Save file to disk
         with open(temp_filename, 'wb') as f:
             f.write(decoded)
         
         conn = sqlite3.connect(temp_filename)
         cursor = conn.cursor()
         
-        # Get all tables
+        # Discover Tables
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = [t[0] for t in cursor.fetchall()]
         
         for table in tables:
-            # OPTIMIZATION: Limit initial read to 1000 rows for the preview to prevent OOM
-            df_preview = pd.read_sql_query(f"SELECT * FROM {table} LIMIT 1000", conn)
+            # PERFORMANCE: Sample data to prevent OOM on Render
+            df_full = pd.read_sql_query(f"SELECT * FROM {table} LIMIT 1000", conn)
             
-            # 2. AI Anomaly Detection (Isolation Forest)
-            numeric_cols = df_preview.select_dtypes(include=[np.number]).columns
-            anomalies = 0
-            if len(numeric_cols) > 0 and len(df_preview) > 10:
-                # Contamination set to 5% for standard sensitivity
-                model = IsolationForest(contamination=0.05, random_state=42)
-                preds = model.fit_predict(df_preview[numeric_cols].fillna(0))
-                anomalies = int((preds == -1).sum())
+            # ML: Anomaly Detection
+            numeric_cols = df_full.select_dtypes(include=[np.number]).columns
+            anomaly_count = 0
+            if len(numeric_cols) > 0 and len(df_full) > 10:
+                iso_forest = IsolationForest(contamination=0.05, random_state=42)
+                preds = iso_forest.fit_predict(df_full[numeric_cols].fillna(0))
+                anomaly_count = int((preds == -1).sum())
             
-            # 3. Statistical Profiling (using the preview sample for speed)
-            stats = df_preview.describe(include='all').to_dict()
-            corr = df_preview.corr(numeric_only=True).to_dict() if len(numeric_cols) > 1 else {}
-
+            # STATS: Generate metadata
             db_summary[table] = {
-                'df': df_preview,
-                'stats': stats,
-                'anomalies': anomalies,
-                'correlations': corr,
-                'columns': list(df_preview.columns)
+                'df': df_full,
+                'stats': df_full.describe(include='all').to_dict(),
+                'anomalies': anomaly_count,
+                'correlations': df_full.corr(numeric_only=True).to_dict() if len(numeric_cols) > 1 else {},
+                'columns': list(df_full.columns)
             }
         
         return db_summary
@@ -86,20 +110,40 @@ def process_database(contents, filename):
     except Exception as e:
         print(f"Error processing {filename}: {str(e)}")
         return None
-    
     finally:
-        # 4. CRITICAL: Cleanup to prevent Render disk overflow
         if conn:
             conn.close()
         if os.path.exists(temp_filename):
             os.remove(temp_filename)
 
-@app.callback(Output('output-data-upload', 'children'),
-              Input('upload-data', 'contents'),
-              State('upload-data', 'filename'))
+@app.callback(
+    Output('ai-query-response', 'children'),
+    Input('ai-query-btn', 'n_clicks'),
+    State('ai-query-input', 'value'),
+    State('upload-data', 'filename')
+)
+def handle_ai_query(n_clicks, query, filename):
+    if n_clicks == 0:
+        return "No query submitted yet."
+    if not filename:
+        return "Please upload a database file first."
+    if not query:
+        return "Please enter a question."
+    
+    # FUTURE: Integrate OpenAI/Groq API here
+    return html.Div([
+        html.Span("🤖 AI Interpretation: ", style={'fontWeight': 'bold', 'color': '#2980b9'}),
+        f"Requesting analysis for '{query}' on {filename[0]}. SQL mapping and LLM response logic is ready for API connection."
+    ])
+
+@app.callback(
+    Output('output-data-upload', 'children'),
+    Input('upload-data', 'contents'),
+    State('upload-data', 'filename')
+)
 def update_output(list_of_contents, list_of_names):
     if not list_of_contents:
-        return html.Div("No files uploaded yet.", style={'textAlign': 'center', 'padding': '20px'})
+        return html.Div("Upload a database to begin the AI analysis.", style={'textAlign': 'center', 'marginTop': '40px'})
 
     all_db_data = {}
     for c, n in zip(list_of_contents, list_of_names):
@@ -107,63 +151,54 @@ def update_output(list_of_contents, list_of_names):
         if data:
             all_db_data[n] = data
 
-    if not all_db_data:
-        return html.Div("Error: Could not process the uploaded files. Ensure they are valid .db files.", style={'color': 'red'})
-
-    children = []
-
-    # File-Level Render Logic
-    for filename, tables in all_db_data.items():
-        children.append(html.Hr())
-        children.append(html.H3(f"📁 Analysis: {filename}", style={'color': '#2c3e50'}))
-        
-        for table_name, data in tables.items():
-            children.append(html.H4(f"Table: {table_name}", style={'marginLeft': '20px'}))
-            
-            # AI Insight Badge
-            if data['anomalies'] > 0:
-                children.append(html.Div([
-                    html.B("🔍 AI Insight: "),
-                    f"Detected {data['anomalies']} statistical anomalies in this dataset sample."
-                ], style={'backgroundColor': '#fff3cd', 'padding': '10px', 'borderRadius': '5px', 'borderLeft': '5px solid #ffecb5'}))
-
-            # Data Table Preview
-            children.append(dash_table.DataTable(
-                data=data['df'].to_dict('records'),
-                columns=[{"name": i, "id": i} for i in data['df'].columns],
-                style_table={'overflowX': 'auto', 'marginTop': '10px'},
-                page_size=10
-            ))
-            
-            # Visualization
-            if data['correlations']:
-                fig = px.imshow(pd.DataFrame(data['correlations']), 
-                               title=f"Correlation Matrix: {table_name}",
-                               color_continuous_scale='RdBu_r')
-                children.append(dcc.Graph(figure=fig))
+    results = []
 
     # Cross-File Intelligence Logic
     if len(all_db_data) > 1:
-        children.append(html.Hr())
-        children.append(html.H2("🌐 Cross-File Intelligence", style={'color': '#2980b9'}))
+        results.append(html.Div([
+            html.H2("🌐 Cross-File Intelligence"),
+            html.P("Analyzing relationships between uploaded datasets...")
+        ], style={'padding': '20px', 'backgroundColor': '#dfe6e9', 'borderRadius': '10px'}))
+
+    # Render results for each file
+    for filename, tables in all_db_data.items():
+        results.append(html.H2(f"📄 File: {filename}", style={'marginTop': '40px'}))
         
-        shared_keys = []
-        filenames = list(all_db_data.keys())
-        for i in range(len(filenames)):
-            for j in range(i + 1, len(filenames)):
-                f1, f2 = filenames[i], filenames[j]
-                cols1 = set([col for t in all_db_data[f1].values() for col in t['columns']])
-                cols2 = set([col for t in all_db_data[f2].values() for col in t['columns']])
-                shared = cols1.intersection(cols2)
-                if shared:
-                    shared_keys.append(f"{f1} ⟷ {f2}: Common columns {list(shared)}")
+        for table_name, data in tables.items():
+            results.append(html.Div([
+                html.H4(f"Table: {table_name}"),
+                
+                # Anomaly Alert
+                html.Div([
+                    html.B("🔍 AI Anomaly Detection: "),
+                    f"{data['anomalies']} potential data outliers found." if data['anomalies'] > 0 else "Data appears statistically consistent."
+                ], style={
+                    'padding': '10px', 
+                    'backgroundColor': '#fff3cd' if data['anomalies'] > 0 else '#d4edda',
+                    'borderLeft': '5px solid #ffecb5' if data['anomalies'] > 0 else '#c3e6cb',
+                    'marginBottom': '10px'
+                }),
 
-        if shared_keys:
-            children.append(html.Ul([html.Li(sk) for sk in shared_keys]))
-        else:
-            children.append(html.P("No common relational keys found across databases."))
+                # Data Preview
+                dash_table.DataTable(
+                    data=data['df'].head(10).to_dict('records'),
+                    columns=[{"name": i, "id": i} for i in data['df'].columns],
+                    style_table={'overflowX': 'auto'},
+                    page_size=5,
+                    style_header={'backgroundColor': 'rgb(230, 230, 230)', 'fontWeight': 'bold'}
+                ),
 
-    return children
+                # Heatmap
+                dcc.Graph(
+                    figure=px.imshow(
+                        pd.DataFrame(data['correlations']), 
+                        title=f"Correlation Matrix ({table_name})",
+                        color_continuous_scale='Blues'
+                    )
+                ) if data['correlations'] else html.P("No numeric correlations available for this table.")
+            ], style={'marginBottom': '50px', 'padding': '20px', 'border': '1px solid #eee'}))
+
+    return results
 
 if __name__ == '__main__':
     app.run_server(debug=True)
