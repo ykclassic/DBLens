@@ -3,25 +3,24 @@ from dash import dcc, html, dash_table, Input, Output, State
 import pandas as pd
 import numpy as np
 import sqlite3
-import io
 import base64
 import os
 import plotly.express as px
 from sklearn.ensemble import IsolationForest
+from openai import OpenAI
 
 # Initialize Dash App
-# server = app.server is required for Gunicorn/Render deployment
 app = dash.Dash(__name__, external_stylesheets=['https://codepen.io/chriddyp/pen/bWLwgP.css'])
 server = app.server 
 
 app.layout = html.Div([
     # Header Section
     html.Div([
-        html.H1("AI-Driven Database Insight Generator", style={'marginBottom': '0px'}),
-        html.P("Enterprise Analytics & Natural Language Querying", style={'color': '#7f8c8d'})
-    ], style={'textAlign': 'center', 'padding': '20px', 'backgroundColor': '#f8f9fa'}),
+        html.H1("DBLens: AI-Driven Insight Generator", style={'marginBottom': '0px', 'color': '#2c3e50'}),
+        html.P("Automated Intelligence & Natural Language Querying", style={'color': '#7f8c8d'})
+    ], style={'textAlign': 'center', 'padding': '30px', 'backgroundColor': '#f8f9fa', 'borderBottom': '1px solid #eee'}),
 
-    # Main Upload Section
+    # Upload Section
     html.Div([
         dcc.Upload(
             id='upload-data',
@@ -29,49 +28,54 @@ app.layout = html.Div([
             style={
                 'width': '100%', 'height': '80px', 'lineHeight': '80px',
                 'borderWidth': '2px', 'borderStyle': 'dashed',
-                'borderRadius': '10px', 'textAlign': 'center', 'margin': '10px'
+                'borderRadius': '10px', 'textAlign': 'center', 'margin': '20px 0'
             },
             multiple=True
         ),
-    ], style={'padding': '0 50px'}),
+    ], style={'padding': '0 10%'}),
 
-    # AI Consultant Section (NLQ Interface)
+    # NLQ Consultant Interface
     html.Div([
-        html.H3("💬 AI Data Consultant"),
-        html.P("Ask questions about your data in plain English (e.g., 'Find anomalies in sales')"),
+        html.H3("💬 AI Data Consultant", style={'marginTop': '0'}),
+        html.P("Ask complex questions like 'Which products have the highest correlation with profit?' or 'List anomalies'."),
         dcc.Input(
             id='ai-query-input', 
-            placeholder='Type your question here...', 
-            style={'width': '70%', 'padding': '10px', 'borderRadius': '5px', 'border': '1px solid #ccc'}
+            placeholder='Ask your data a question...', 
+            style={'width': '75%', 'padding': '12px', 'borderRadius': '5px', 'border': '1px solid #ccc'}
         ),
         html.Button(
-            'Analyze with AI', 
+            'Ask AI', 
             id='ai-query-btn', 
             n_clicks=0,
-            style={'marginLeft': '10px', 'backgroundColor': '#2980b9', 'color': 'white', 'border': 'none', 'padding': '10px 20px', 'borderRadius': '5px'}
+            style={'marginLeft': '15px', 'backgroundColor': '#2980b9', 'color': 'white', 'border': 'none', 'padding': '12px 25px', 'borderRadius': '5px', 'cursor': 'pointer'}
         ),
-        html.Div(id='ai-query-response', style={'marginTop': '20px', 'padding': '15px', 'borderRadius': '5px', 'backgroundColor': '#ecf0f1', 'minHeight': '50px'})
-    ], style={'margin': '20px 50px', 'padding': '20px', 'border': '1px solid #dcdde1', 'borderRadius': '10px'}),
+        dcc.Loading(
+            id="loading-ai",
+            children=[html.Div(id='ai-query-response', style={'marginTop': '20px', 'padding': '20px', 'borderRadius': '8px', 'backgroundColor': '#ffffff', 'border': '1px solid #e1e4e8', 'minHeight': '50px'})]
+        )
+    ], style={'margin': '20px 10%', 'padding': '25px', 'backgroundColor': '#f1f2f6', 'borderRadius': '12px'}),
 
-    # Results Display Section
+    # Main Dashboard Area
     dcc.Loading(
-        id="loading-spinner",
-        type="cube",
-        children=html.Div(id='output-data-upload', style={'padding': '0 50px'})
+        id="loading-main",
+        type="default",
+        children=html.Div(id='output-data-upload', style={'padding': '0 10%'})
     ),
 ])
 
+# --- HELPER FUNCTIONS ---
+
+def get_schema_context(conn):
+    """Extracts SQL schema to give the AI context without sending actual data."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT sql FROM sqlite_master WHERE type='table';")
+    return "\n".join([row[0] for row in cursor.fetchall() if row[0]])
+
 def process_database(contents, filename):
-    """
-    Handles file decoding, temporary storage, SQLite processing, and ML analysis.
-    Optimized for memory safety and speed.
-    """
     temp_filename = f"temp_{filename}"
     db_summary = {}
     conn = None
-    
     try:
-        # Decode and Save
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
         with open(temp_filename, 'wb') as f:
@@ -79,42 +83,36 @@ def process_database(contents, filename):
         
         conn = sqlite3.connect(temp_filename)
         cursor = conn.cursor()
-        
-        # Discover Tables
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = [t[0] for t in cursor.fetchall()]
         
         for table in tables:
-            # PERFORMANCE: Sample data to prevent OOM on Render
-            df_full = pd.read_sql_query(f"SELECT * FROM {table} LIMIT 1000", conn)
+            df = pd.read_sql_query(f"SELECT * FROM {table} LIMIT 1000", conn)
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
             
-            # ML: Anomaly Detection
-            numeric_cols = df_full.select_dtypes(include=[np.number]).columns
-            anomaly_count = 0
-            if len(numeric_cols) > 0 and len(df_full) > 10:
-                iso_forest = IsolationForest(contamination=0.05, random_state=42)
-                preds = iso_forest.fit_predict(df_full[numeric_cols].fillna(0))
-                anomaly_count = int((preds == -1).sum())
+            # Anomaly Detection
+            anomalies = 0
+            if len(numeric_cols) > 0 and len(df) > 10:
+                model = IsolationForest(contamination=0.05, random_state=42)
+                preds = model.fit_predict(df[numeric_cols].fillna(0))
+                anomalies = int((preds == -1).sum())
             
-            # STATS: Generate metadata
             db_summary[table] = {
-                'df': df_full,
-                'stats': df_full.describe(include='all').to_dict(),
-                'anomalies': anomaly_count,
-                'correlations': df_full.corr(numeric_only=True).to_dict() if len(numeric_cols) > 1 else {},
-                'columns': list(df_full.columns)
+                'df': df,
+                'stats': df.describe(include='all').to_dict(),
+                'anomalies': anomalies,
+                'correlations': df.corr(numeric_only=True).to_dict() if len(numeric_cols) > 1 else {},
+                'columns': list(df.columns)
             }
-        
         return db_summary
-
     except Exception as e:
-        print(f"Error processing {filename}: {str(e)}")
+        print(f"Error: {e}")
         return None
     finally:
-        if conn:
-            conn.close()
-        if os.path.exists(temp_filename):
-            os.remove(temp_filename)
+        if conn: conn.close()
+        # Note: We keep the file temporarily for the AI query session, then wipe on next upload
+
+# --- CALLBACKS ---
 
 @app.callback(
     Output('ai-query-response', 'children'),
@@ -122,83 +120,91 @@ def process_database(contents, filename):
     State('ai-query-input', 'value'),
     State('upload-data', 'filename')
 )
-def handle_ai_query(n_clicks, query, filename):
-    if n_clicks == 0:
-        return "No query submitted yet."
-    if not filename:
-        return "Please upload a database file first."
-    if not query:
-        return "Please enter a question."
-    
-    # FUTURE: Integrate OpenAI/Groq API here
-    return html.Div([
-        html.Span("🤖 AI Interpretation: ", style={'fontWeight': 'bold', 'color': '#2980b9'}),
-        f"Requesting analysis for '{query}' on {filename[0]}. SQL mapping and LLM response logic is ready for API connection."
-    ])
+def handle_ai_query(n_clicks, query, filenames):
+    if n_clicks == 0 or not query or not filenames:
+        return "The AI Consultant is ready. Upload a file and ask a question."
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return html.Div("⚠️ Configuration Error: OPENAI_API_KEY not set in Render Environment.", style={'color': 'red'})
+
+    temp_path = f"temp_{filenames[0]}"
+    if not os.path.exists(temp_path):
+        return "File session expired. Please re-upload your database."
+
+    try:
+        client = OpenAI(api_key=api_key)
+        conn = sqlite3.connect(temp_path)
+        schema = get_schema_context(conn)
+
+        prompt = f"""
+        Database Schema:
+        {schema}
+        
+        Task: Convert the user's question into a valid SQLite query. 
+        Question: {query}
+        Return ONLY the raw SQL. No markdown formatting, no explanation.
+        """
+
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "system", "content": "You are a SQL expert generator."},
+                      {"role": "user", "content": prompt}]
+        )
+
+        sql_query = response.choices[0].message.content.strip().replace('```sql', '').replace('```', '')
+        result_df = pd.read_sql_query(sql_query, conn)
+        conn.close()
+
+        return html.Div([
+            html.P([html.B("Generated Query: "), html.Code(sql_query)], style={'fontSize': '0.8em', 'color': '#636e72'}),
+            html.H5("AI Query Result:"),
+            dash_table.DataTable(
+                data=result_df.head(10).to_dict('records'),
+                columns=[{"name": i, "id": i} for i in result_df.columns],
+                style_table={'overflowX': 'auto'},
+                style_cell={'textAlign': 'left', 'padding': '10px'},
+                style_header={'backgroundColor': '#f8f9fa', 'fontWeight': 'bold'}
+            )
+        ])
+    except Exception as e:
+        return html.Div(f"❌ Analysis Error: {str(e)}", style={'color': '#d63031'})
 
 @app.callback(
     Output('output-data-upload', 'children'),
     Input('upload-data', 'contents'),
     State('upload-data', 'filename')
 )
-def update_output(list_of_contents, list_of_names):
+def update_dashboard(list_of_contents, list_of_names):
     if not list_of_contents:
-        return html.Div("Upload a database to begin the AI analysis.", style={'textAlign': 'center', 'marginTop': '40px'})
+        return html.Div("Awaiting database upload...", style={'textAlign': 'center', 'marginTop': '50px', 'color': '#bdc3c7'})
 
-    all_db_data = {}
+    all_data = {}
     for c, n in zip(list_of_contents, list_of_names):
-        data = process_database(c, n)
-        if data:
-            all_db_data[n] = data
+        res = process_database(c, n)
+        if res: all_data[n] = res
 
-    results = []
-
-    # Cross-File Intelligence Logic
-    if len(all_db_data) > 1:
-        results.append(html.Div([
-            html.H2("🌐 Cross-File Intelligence"),
-            html.P("Analyzing relationships between uploaded datasets...")
-        ], style={'padding': '20px', 'backgroundColor': '#dfe6e9', 'borderRadius': '10px'}))
-
-    # Render results for each file
-    for filename, tables in all_db_data.items():
-        results.append(html.H2(f"📄 File: {filename}", style={'marginTop': '40px'}))
-        
-        for table_name, data in tables.items():
-            results.append(html.Div([
-                html.H4(f"Table: {table_name}"),
-                
-                # Anomaly Alert
+    output = []
+    for fname, tables in all_data.items():
+        output.append(html.H2(f"📊 Dataset: {fname}", style={'borderBottom': '2px solid #2980b9', 'paddingBottom': '10px'}))
+        for tname, data in tables.items():
+            output.append(html.Div([
+                html.H4(f"Table: {tname}"),
                 html.Div([
-                    html.B("🔍 AI Anomaly Detection: "),
-                    f"{data['anomalies']} potential data outliers found." if data['anomalies'] > 0 else "Data appears statistically consistent."
-                ], style={
-                    'padding': '10px', 
-                    'backgroundColor': '#fff3cd' if data['anomalies'] > 0 else '#d4edda',
-                    'borderLeft': '5px solid #ffecb5' if data['anomalies'] > 0 else '#c3e6cb',
-                    'marginBottom': '10px'
-                }),
-
-                # Data Preview
+                    html.B("🤖 Status: "),
+                    f"Found {data['anomalies']} anomalies." if data['anomalies'] > 0 else "Data looks healthy."
+                ], style={'padding': '10px', 'backgroundColor': '#f8f9fa', 'marginBottom': '10px', 'borderRadius': '5px'}),
+                
                 dash_table.DataTable(
-                    data=data['df'].head(10).to_dict('records'),
+                    data=data['df'].head(5).to_dict('records'),
                     columns=[{"name": i, "id": i} for i in data['df'].columns],
-                    style_table={'overflowX': 'auto'},
-                    page_size=5,
-                    style_header={'backgroundColor': 'rgb(230, 230, 230)', 'fontWeight': 'bold'}
+                    style_table={'overflowX': 'auto'}
                 ),
+                
+                dcc.Graph(figure=px.imshow(pd.DataFrame(data['correlations']), title=f"Correlation Matrix: {tname}")) if data['correlations'] else None
+            ], style={'marginBottom': '40px', 'padding': '20px', 'border': '1px solid #eee', 'borderRadius': '8px'}))
 
-                # Heatmap
-                dcc.Graph(
-                    figure=px.imshow(
-                        pd.DataFrame(data['correlations']), 
-                        title=f"Correlation Matrix ({table_name})",
-                        color_continuous_scale='Blues'
-                    )
-                ) if data['correlations'] else html.P("No numeric correlations available for this table.")
-            ], style={'marginBottom': '50px', 'padding': '20px', 'border': '1px solid #eee'}))
-
-    return results
+    return output
 
 if __name__ == '__main__':
     app.run_server(debug=True)
