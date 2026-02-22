@@ -8,3 +8,4 @@ openai>=1.0.0
 langchain
 sqlalchemy
 dash-cytoscape # For the ERD Mapping
+groq>=0.4.2
